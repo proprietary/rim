@@ -1,0 +1,5 @@
+#!/bin/sh
+
+export DYLD_INSERT_LIBRARIES=/Users/zds/src/zelcon.net/rim/src/interceptor.dylib
+
+rm "$@"

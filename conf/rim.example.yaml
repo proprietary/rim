@@ -1,0 +1,9 @@
+# This is the directory where rim(1) will set up a recycle bin
+trashdir: ~/.rim-trash
+
+# How long (in seconds) to keep files before permanently deleting them
+ttl: 604800
+
+# This is the name of the file which will essentially maintain a list
+# of files you deleted. You probably do not need to change this.
+database_name: rim.db
