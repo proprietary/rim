@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS trash_entry (
     unix_mode INTEGER NOT NULL,
     uid INTEGER NOT NULL,
     gid INTEGER NOT NULL,
-    created_at INTEGER GENERATED ALWAYS AS (unixepoch()) STORED,
-    INDEX idx_abspath (abspath),
-    INDEX expiration (expiration)
+    created_at INTEGER DEFAULT (unixepoch()),
+    UNIQUE (abspath),
+    UNIQUE (expiration)
 );
