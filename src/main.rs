@@ -33,7 +33,11 @@ fn main() {
         None => Config::default(),
     });
     let app = App::new(config).unwrap();
-    let filename = std::path::PathBuf::from(&opts.filename);
+    let mut filename = std::path::PathBuf::from(&opts.filename);
+    if filename.is_relative() {
+        let cwd = std::env::current_dir().expect("Can't tell what directory this is in");
+        filename = cwd.join(filename);
+    }
     if opts.recover {
         // TODO: display TUI for selecting file to recover
         // app.recover_file(&filename).unwrap();

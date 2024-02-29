@@ -2,6 +2,8 @@ use rusqlite::Connection;
 
 use crate::config::Config;
 use crate::fs::FileMetadata;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -20,10 +22,30 @@ impl MetadataDB {
 
     pub(crate) fn create(&self, meta: &FileMetadata) -> Result<i64, rusqlite::Error> {
         let query = r#"
-
-INSERT INTO trash_entry (abspath, file_size, blake3sum, mtime, atime, unix_mode, uid, gid, expiration)
-VALUES (:abspath, :file_size, :blake3sum, :mtime, :atime, :unix_mode, :uid, :gid, :expiration)
-
+INSERT INTO
+    trash_entry (
+        abspath,
+        file_size,
+        blake3sum,
+        mtime,
+        atime,
+        unix_mode,
+        uid,
+        gid,
+        expiration
+    )
+VALUES
+    (
+        :abspath,
+        :file_size,
+        :blake3sum,
+        :mtime,
+        :atime,
+        :unix_mode,
+        :uid,
+        :gid,
+        :expiration
+    )
 "#;
         let expiration = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -53,8 +75,11 @@ VALUES (:abspath, :file_size, :blake3sum, :mtime, :atime, :unix_mode, :uid, :gid
 
     pub(crate) fn delete(&self, trash_entry_id: i64) -> Result<(), rusqlite::Error> {
         let query = r#"
-DELETE FROM trash_entry WHERE id = :id
-        "#;
+DELETE FROM
+    trash_entry
+WHERE
+    id = :id
+"#;
         let _ = self
             .connection
             .execute(query, &[(":id", &trash_entry_id)])?;
@@ -66,10 +91,22 @@ DELETE FROM trash_entry WHERE id = :id
         abspath: &std::path::Path,
     ) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
         let query = r#"
-SELECT id, abspath, file_size, blake3sum, mtime, atime, unix_mode, uid, gid
-FROM trash_entry
-WHERE abspath = :abspath
-ORDER BY created_at DESC
+SELECT
+    id,
+    abspath,
+    file_size,
+    blake3sum,
+    mtime,
+    atime,
+    unix_mode,
+    uid,
+    gid
+FROM
+    trash_entry
+WHERE
+    abspath = :abspath
+ORDER BY
+    created_at DESC
         "#;
         let mut stmt = self.connection.prepare(query)?;
         let rows = stmt.query_map(&[(":abspath", &abspath.to_string_lossy())], |row| {
@@ -96,9 +133,19 @@ ORDER BY created_at DESC
 
     pub(crate) fn find_by_id(&self, id: i64) -> Result<Option<FileMetadata>, rusqlite::Error> {
         let query = r#"
-SELECT abspath, file_size, blake3sum, mtime, atime, unix_mode, uid, gid
-FROM trash_entry
-WHERE id = :id
+SELECT
+    abspath,
+    file_size,
+    blake3sum,
+    mtime,
+    atime,
+    unix_mode,
+    uid,
+    gid
+FROM
+    trash_entry
+WHERE
+    id = :id
 "#;
         let mut stmt = self.connection.prepare(query)?;
         let mut r = stmt.query_map(&[(":id", &id)], |row| {
@@ -125,9 +172,22 @@ WHERE id = :id
         now: u64,
     ) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
         let query = r#"
-SELECT id, abspath, file_size, blake3sum, mtime, atime, unix_mode, uid, gid
-FROM trash_entry
-WHERE expiration < :now
+SELECT
+    id,
+    abspath,
+    file_size,
+    blake3sum,
+    mtime,
+    atime,
+    unix_mode,
+    uid,
+    gid
+FROM
+    trash_entry
+WHERE
+    expiration < :now
+ORDER BY
+    abspath DESC
         "#;
         let mut stmt = self.connection.prepare(query)?;
         let rows = stmt.query_map(&[(":now", &now)], |row| {
@@ -151,6 +211,50 @@ WHERE expiration < :now
         }
         Ok(results)
     }
+}
+
+pub fn toposort_files(files: &Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut graph: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for file in files {
+        let path = file.clone();
+        for ancestor in path.ancestors().skip(1) {
+            if ancestor.has_root() && ancestor.components().count() == 1 {
+                continue;
+            }
+            let child_name = path.clone();
+            graph
+                .entry(ancestor.to_path_buf())
+                .or_default()
+                .push(child_name);
+        }
+    }
+    topological_sort(&graph)
+}
+
+fn topological_sort(graph: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<PathBuf> {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut sorted_paths: Vec<PathBuf> = Vec::new();
+
+    fn dfs(
+        node: &PathBuf,
+        graph: &HashMap<PathBuf, Vec<PathBuf>>,
+        visited: &mut HashSet<PathBuf>,
+        sorted_paths: &mut Vec<PathBuf>,
+    ) {
+        if visited.contains(node) {
+            return;
+        }
+        visited.insert(node.to_path_buf());
+        for child in graph.get(node).unwrap_or(&Vec::new()) {
+            dfs(child, graph, visited, sorted_paths);
+        }
+        sorted_paths.push(node.to_path_buf());
+    }
+
+    for node in graph.keys() {
+        dfs(node, graph, &mut visited, &mut sorted_paths);
+    }
+    sorted_paths
 }
 
 #[cfg(test)]
@@ -225,5 +329,27 @@ mod test {
         assert_eq!(meta.uid, meta_found.uid);
         assert_eq!(meta.gid, meta_found.gid);
         assert_eq!(meta.abspath, meta_found.abspath);
+    }
+
+    #[test]
+    fn test_toposort_files() {
+        let mut files = vec![
+            PathBuf::from("/tmp"),
+            PathBuf::from("/tmp/foo/bar/baz/quux"),
+            PathBuf::from("/tmp/foo"),
+            PathBuf::from("/tmp/foo/bar/baz/qux"),
+            PathBuf::from("/tmp/foo/bar/baz"),
+            PathBuf::from("/tmp/foo/bar"),
+        ];
+        let sorted = toposort_files(&files);
+        let expected = vec![
+            PathBuf::from("/tmp/foo/bar/baz/quux"),
+            PathBuf::from("/tmp/foo/bar/baz/qux"),
+            PathBuf::from("/tmp/foo/bar/baz"),
+            PathBuf::from("/tmp/foo/bar"),
+            PathBuf::from("/tmp/foo"),
+            PathBuf::from("/tmp"),
+        ];
+        assert_eq!(sorted, expected);
     }
 }

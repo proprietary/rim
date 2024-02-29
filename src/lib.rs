@@ -1,7 +1,7 @@
 pub mod config;
 mod fs;
 pub mod metadata_db;
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 pub struct App {
     pub config: Rc<config::Config>,
@@ -80,5 +80,48 @@ impl App {
             .parse::<i64>()
             .expect("Invalid trash filename: Should have an integer id at the end of the filename");
         Ok(id)
+    }
+
+    /// Runs a maintenance task which permanently deletes the expired files.
+    pub fn run_maintenance(&self) -> Result<(), std::io::Error> {
+        let now: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired = match self.metadata_db.find_expired(now) {
+            Ok(x) => x,
+            Err(rusqlite::Error::SqlInputError {
+                error,
+                msg,
+                sql,
+                offset,
+            }) => {
+                eprintln!(
+                    "SQL error: {}, error={}, sql={}, offset={}",
+                    msg, error, sql, offset
+                );
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "SQL Error"));
+            }
+            Err(e) => {
+                eprintln!("SQL error");
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "SQL Error"));
+            }
+        };
+        let realpaths: Vec<PathBuf> = expired
+            .into_iter()
+            .map(|(id, meta)| {
+                let p: PathBuf = PathBuf::from(&meta.abspath);
+                self.generate_trash_path(&p, id)
+            })
+            .collect();
+        let realpaths = metadata_db::toposort_files(&realpaths);
+        for realpath in realpaths.iter() {
+            if realpath.is_dir() {
+                std::fs::remove_dir(realpath)?;
+            } else {
+                std::fs::remove_file(realpath)?;
+            }
+        }
+        Ok(())
     }
 }
