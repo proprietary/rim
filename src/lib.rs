@@ -1,7 +1,11 @@
 pub mod config;
 mod fs;
 pub mod metadata_db;
-use std::{path::PathBuf, rc::Rc};
+use std::{
+    os::unix::fs::{chown, PermissionsExt},
+    path::PathBuf,
+    rc::Rc,
+};
 
 pub struct App {
     pub config: Rc<config::Config>,
@@ -61,8 +65,19 @@ impl App {
                 ));
             }
         };
-        let trash_filename = self.generate_trash_path(meta.abspath.as_ref(), id);
-        std::fs::rename(trash_filename, meta.abspath)
+        let original_path: std::path::PathBuf = meta.abspath.into();
+        let trash_filename = self.generate_trash_path(&original_path, id);
+        if original_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "File already exists",
+            ));
+        }
+        std::fs::rename(trash_filename, &original_path)?;
+        let perms: std::fs::Permissions = std::fs::Permissions::from_mode(meta.unix_mode);
+        std::fs::set_permissions(&original_path, perms)?;
+        chown(original_path, Some(meta.uid), Some(meta.gid))?;
+        Ok(())
     }
 
     fn generate_trash_path(&self, path: &std::path::Path, id: i64) -> std::path::PathBuf {
