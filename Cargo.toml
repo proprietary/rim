@@ -11,3 +11,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 blake3 = "1"
+dirs-next = "2.0.0"

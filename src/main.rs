@@ -1,6 +1,6 @@
 use clap::Parser;
 use rim::{config::Config, App};
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -10,7 +10,7 @@ use std::rc::Rc;
     about = "Recycle bin for the command line"
 )]
 struct Opts {
-    filename: String,
+    filename: Option<String>,
 
     #[arg(short, long)]
     recover: bool,
@@ -30,18 +30,46 @@ fn main() {
             let path = std::path::PathBuf::from(path);
             Config::open(&path).unwrap()
         }
-        None => Config::default(),
+        None => {
+            let mut config = Config::default();
+            let config_paths: Vec<PathBuf> = vec![
+                dirs_next::home_dir()
+                    .unwrap()
+                    .join("..config")
+                    .join("rim")
+                    .join("config.yaml"),
+                dirs_next::home_dir()
+                    .unwrap()
+                    .join(".rim")
+                    .join("config.yaml"),
+                dirs_next::home_dir().unwrap().join(".rim.yaml"),
+            ];
+            for path in config_paths {
+                if path.exists() {
+                    config = Config::open(&path).expect("Error opening config file");
+                }
+            }
+            config
+        }
     });
     let app = App::new(config).unwrap();
-    let mut filename = std::path::PathBuf::from(&opts.filename);
-    if filename.is_relative() {
-        let cwd = std::env::current_dir().expect("Can't tell what directory this is in");
-        filename = cwd.join(filename);
-    }
-    if opts.recover {
-        // TODO: display TUI for selecting file to recover
-        // app.recover_file(&filename).unwrap();
-    } else {
-        app.recycle_file(&filename).unwrap();
+    match opts.filename {
+        Some(filename) => {
+            let mut filename = std::path::PathBuf::from(&filename);
+            if filename.is_relative() {
+                let cwd = std::env::current_dir().expect("Can't tell what directory this is in");
+                filename = cwd.join(filename);
+            }
+            if opts.recover {
+                // TODO: display TUI for selecting file to recover
+                // app.recover_file(&filename).unwrap();
+                todo!();
+            } else {
+                app.recycle_file(&filename).unwrap();
+            }
+        }
+        None => {
+            todo!();
+        }
     }
 }

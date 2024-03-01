@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::config::Config;
 use crate::fs::FileMetadata;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -18,6 +18,47 @@ impl MetadataDB {
         let sql_string = std::include_str!("metadata_db.sql");
         connection.execute_batch(sql_string)?;
         Ok(MetadataDB { connection, config })
+    }
+
+    pub(crate) fn recent(&self, n: u32) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
+        let query = r#"
+SELECT
+    id,
+    abspath,
+    file_size,
+    blake3sum,
+    mtime,
+    atime,
+    unix_mode,
+    uid,
+    gid
+FROM
+    trash_entry
+ORDER BY
+    created_at DESC
+LIMIT :n
+        "#;
+        let mut stmt = self.connection.prepare(query)?;
+        let rows = stmt.query_map(&[(":n", &n.to_string())], |row| {
+            Ok((
+                row.get("id")?,
+                FileMetadata {
+                    abspath: row.get("abspath")?,
+                    file_size: row.get("file_size")?,
+                    blake3sum: row.get("blake3sum")?,
+                    mtime: row.get("mtime")?,
+                    atime: row.get("atime")?,
+                    unix_mode: row.get("unix_mode")?,
+                    uid: row.get("uid")?,
+                    gid: row.get("gid")?,
+                },
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 
     pub(crate) fn create(&self, meta: &FileMetadata) -> Result<i64, rusqlite::Error> {
@@ -86,6 +127,7 @@ WHERE
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn find(
         &self,
         abspath: &std::path::Path,

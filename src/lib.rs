@@ -88,6 +88,7 @@ impl App {
         trash_path
     }
 
+    #[allow(dead_code)]
     fn id_from_trash_path(&self, path: &std::path::Path) -> Result<i64, std::io::Error> {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let id_str = filename.split('_').last().unwrap();
@@ -95,6 +96,14 @@ impl App {
             .parse::<i64>()
             .expect("Invalid trash filename: Should have an integer id at the end of the filename");
         Ok(id)
+    }
+
+    pub fn list_recent(
+        &self,
+        n: u32,
+    ) -> Result<Vec<(i64, crate::fs::FileMetadata)>, std::io::Error> {
+        let results = self.metadata_db.recent(n).expect("SQL error");
+        Ok(results)
     }
 
     /// Runs a maintenance task which permanently deletes the expired files.
@@ -118,7 +127,7 @@ impl App {
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "SQL Error"));
             }
             Err(e) => {
-                eprintln!("SQL error");
+                eprintln!("SQL error: {}", e);
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "SQL Error"));
             }
         };
