@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::config::Config;
 use crate::fs::FileMetadata;
@@ -14,7 +14,10 @@ pub struct MetadataDB {
 
 impl MetadataDB {
     pub fn new(config: Rc<Config>) -> Result<MetadataDB, rusqlite::Error> {
-        let connection = Connection::open(config.database_path())?;
+        let connection = Connection::open_with_flags(
+            config.database_path(),
+            OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
         let sql_string = std::include_str!("metadata_db.sql");
         connection.execute_batch(sql_string)?;
         Ok(MetadataDB { connection, config })

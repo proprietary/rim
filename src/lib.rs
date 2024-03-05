@@ -21,6 +21,14 @@ impl App {
         })
     }
 
+    pub fn recycle_subtree(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        todo!()
+    }
+
+    pub fn recycle_dir(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        todo!()
+    }
+
     pub fn recycle_file(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
         let meta = fs::read_file_meta(path)?;
         let id = match self.metadata_db.create(&meta) {

@@ -12,3 +12,15 @@ serde_yaml = "0.9"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 blake3 = "1"
 dirs-next = "2.0.0"
+
+[[bin]]
+name = "rim"
+path = "src/bin/rim.rs"
+
+[[bin]]
+name = "rim-recover"
+path = "src/bin/rim-recover.rs"
+
+[[bin]]
+name = "rim-wrap"
+path = "src/bin/rim-wrap.rs"
