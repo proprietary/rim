@@ -24,8 +24,8 @@ struct Opts {
     )]
     recursive: bool,
 
-    #[arg(long)]
-    recover: bool,
+    #[arg(short, long)]
+    force: bool,
 
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -35,21 +35,6 @@ fn main() {
     let opts: Opts = Opts::parse();
     let config = Rc::new(Config::load(opts.config.clone()).expect("Error opening config file"));
     let app = App::new(config).unwrap();
-    if opts.recover {
-        let p = subcommand_path(&ExternalSubcommand::Recover).expect("Could not find rim-recover");
-        let mut cmd = Command::new(p);
-        cmd.arg(opts.filename.clone());
-        if opts.verbose {
-            cmd.arg("--verbose");
-        }
-        if opts.recursive {
-            cmd.arg("--recursive");
-        }
-        if let Some(config) = &opts.config {
-            cmd.arg("--config");
-            cmd.arg(config);
-        }
-    }
     let mut filename = opts.filename.clone();
     if filename.is_relative() {
         let cwd = std::env::current_dir().expect("Can't tell what directory this is in");

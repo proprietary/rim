@@ -1,6 +1,8 @@
 pub mod config;
 mod fs;
 pub mod metadata_db;
+use metadata_db::{MetadataDB, TrashEntry};
+use regex::Regex;
 use std::{
     os::unix::fs::{chown, PermissionsExt},
     path::PathBuf,
@@ -9,30 +11,31 @@ use std::{
 
 pub struct App {
     pub config: Rc<config::Config>,
-    metadata_db: metadata_db::MetadataDB,
+    metadata_db: MetadataDB,
 }
 
 impl App {
     pub fn new(config: Rc<config::Config>) -> Result<App, rusqlite::Error> {
-        let metadata_db = metadata_db::MetadataDB::new(config.clone())?;
+        let metadata_db = MetadataDB::new(config.clone())?;
         Ok(App {
             config,
             metadata_db,
         })
     }
 
-    pub fn recycle_subtree(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+    pub fn recycle_subtree(&self, _path: &std::path::Path) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    pub fn recycle_dir(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+    pub fn recycle_dir(&self, _path: &std::path::Path) -> Result<(), std::io::Error> {
         todo!()
     }
 
     pub fn recycle_file(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
         let meta = fs::read_file_meta(path)?;
-        let id = match self.metadata_db.create(&meta) {
-            Ok(id) => id,
+        let trash_path = self.generate_trash_path(&meta);
+        let entry = match self.metadata_db.create(meta, &trash_path) {
+            Ok(entry) => entry,
             Err(e) => {
                 println!("Error creating metadata entry: {}", e);
                 return Err(std::io::Error::new(
@@ -41,12 +44,11 @@ impl App {
                 ));
             }
         };
-        let trash_path = self.generate_trash_path(path, id);
         match std::fs::rename(path, trash_path) {
             Ok(_) => (),
             Err(e) => {
                 println!("Error moving file to trash: {}", e);
-                let _ = self.metadata_db.delete(id);
+                let _ = self.metadata_db.delete(entry.id);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Error moving file to trash",
@@ -73,8 +75,8 @@ impl App {
                 ));
             }
         };
-        let original_path: std::path::PathBuf = meta.abspath.into();
-        let trash_filename = self.generate_trash_path(&original_path, id);
+        let original_path: std::path::PathBuf = PathBuf::from(&meta.metadata.original_path);
+        let trash_filename = self.generate_trash_path(&meta.metadata);
         if original_path.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -82,17 +84,31 @@ impl App {
             ));
         }
         std::fs::rename(trash_filename, &original_path)?;
-        let perms: std::fs::Permissions = std::fs::Permissions::from_mode(meta.unix_mode);
+        let perms: std::fs::Permissions = std::fs::Permissions::from_mode(meta.metadata.unix_mode);
         std::fs::set_permissions(&original_path, perms)?;
-        chown(original_path, Some(meta.uid), Some(meta.gid))?;
+        chown(
+            original_path,
+            Some(meta.metadata.uid),
+            Some(meta.metadata.gid),
+        )?;
         Ok(())
     }
 
-    fn generate_trash_path(&self, path: &std::path::Path, id: i64) -> std::path::PathBuf {
+    fn generate_trash_path(&self, meta: &crate::fs::FileMetadata) -> std::path::PathBuf {
+        let re = Regex::new(r"(?P<filename>.+?)(?P<ext>\.[^.]*)?$").unwrap();
+        let original_filename = meta.original_path.split('/').last().unwrap();
+        let tagged_filename = re
+            .replace(original_filename, |caps: &regex::Captures| {
+                format!(
+                    "{}_{}{}",
+                    &caps["filename"],
+                    &meta.blake3sum[0..7],
+                    &caps["ext"]
+                )
+            })
+            .to_string();
         let mut trash_path = self.config.trashdir.clone();
-        trash_path.push(path.file_name().unwrap());
-        trash_path.push("_");
-        trash_path.push(id.to_string());
+        trash_path.push(tagged_filename);
         trash_path
     }
 
@@ -106,10 +122,7 @@ impl App {
         Ok(id)
     }
 
-    pub fn list_recent(
-        &self,
-        n: u32,
-    ) -> Result<Vec<(i64, crate::fs::FileMetadata)>, std::io::Error> {
+    pub fn list_recent(&self, n: u32) -> Result<Vec<TrashEntry>, std::io::Error> {
         let results = self.metadata_db.recent(n).expect("SQL error");
         Ok(results)
     }
@@ -139,13 +152,7 @@ impl App {
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "SQL Error"));
             }
         };
-        let realpaths: Vec<PathBuf> = expired
-            .into_iter()
-            .map(|(id, meta)| {
-                let p: PathBuf = PathBuf::from(&meta.abspath);
-                self.generate_trash_path(&p, id)
-            })
-            .collect();
+        let realpaths: Vec<PathBuf> = expired.into_iter().map(|entry| entry.trash_path).collect();
         let realpaths = metadata_db::toposort_files(&realpaths);
         for realpath in realpaths.iter() {
             if realpath.is_dir() {

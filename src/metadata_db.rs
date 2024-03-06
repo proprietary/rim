@@ -3,8 +3,15 @@ use rusqlite::{Connection, OpenFlags};
 use crate::config::Config;
 use crate::fs::FileMetadata;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+#[derive(Debug)]
+pub struct TrashEntry {
+    pub id: i64,
+    pub metadata: FileMetadata,
+    pub trash_path: PathBuf,
+}
 
 #[derive(Debug)]
 pub struct MetadataDB {
@@ -23,11 +30,12 @@ impl MetadataDB {
         Ok(MetadataDB { connection, config })
     }
 
-    pub(crate) fn recent(&self, n: u32) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
+    pub(crate) fn recent(&self, n: u32) -> Result<Vec<TrashEntry>, rusqlite::Error> {
         let query = r#"
 SELECT
     id,
-    abspath,
+    original_path,
+    trash_path,
     file_size,
     blake3sum,
     mtime,
@@ -43,19 +51,23 @@ LIMIT :n
         "#;
         let mut stmt = self.connection.prepare(query)?;
         let rows = stmt.query_map(&[(":n", &n.to_string())], |row| {
-            Ok((
-                row.get("id")?,
-                FileMetadata {
-                    abspath: row.get("abspath")?,
-                    file_size: row.get("file_size")?,
-                    blake3sum: row.get("blake3sum")?,
-                    mtime: row.get("mtime")?,
-                    atime: row.get("atime")?,
-                    unix_mode: row.get("unix_mode")?,
-                    uid: row.get("uid")?,
-                    gid: row.get("gid")?,
-                },
-            ))
+            let id: i64 = row.get("id")?;
+            let metadata = FileMetadata {
+                original_path: row.get("original_path")?,
+                file_size: row.get("file_size")?,
+                blake3sum: row.get("blake3sum")?,
+                mtime: row.get("mtime")?,
+                atime: row.get("atime")?,
+                unix_mode: row.get("unix_mode")?,
+                uid: row.get("uid")?,
+                gid: row.get("gid")?,
+            };
+            let trash_path: PathBuf = row.get::<_, String>("trash_path")?.into();
+            Ok(TrashEntry {
+                id,
+                metadata,
+                trash_path,
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -64,11 +76,16 @@ LIMIT :n
         Ok(results)
     }
 
-    pub(crate) fn create(&self, meta: &FileMetadata) -> Result<i64, rusqlite::Error> {
+    pub(crate) fn create(
+        &self,
+        meta: FileMetadata,
+        generated_path: &Path,
+    ) -> Result<TrashEntry, rusqlite::Error> {
         let query = r#"
 INSERT INTO
     trash_entry (
-        abspath,
+        original_path,
+        trash_path,
         file_size,
         blake3sum,
         mtime,
@@ -80,7 +97,8 @@ INSERT INTO
     )
 VALUES
     (
-        :abspath,
+        :original_path,
+        :trash_path,
         :file_size,
         :blake3sum,
         :mtime,
@@ -99,7 +117,8 @@ VALUES
         let rows_changed = self.connection.execute(
             query,
             &[
-                (":abspath", &meta.abspath),
+                (":original_path", &meta.original_path),
+                (":trash_path", &generated_path.to_string_lossy().to_string()),
                 (":file_size", &meta.file_size.to_string()),
                 (":blake3sum", &meta.blake3sum),
                 (":mtime", &meta.mtime.to_string()),
@@ -114,7 +133,11 @@ VALUES
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         let inserted_id = self.connection.last_insert_rowid();
-        Ok(inserted_id)
+        Ok(TrashEntry {
+            metadata: meta,
+            trash_path: generated_path.into(),
+            id: inserted_id,
+        })
     }
 
     pub(crate) fn delete(&self, trash_entry_id: i64) -> Result<(), rusqlite::Error> {
@@ -134,11 +157,12 @@ WHERE
     pub(crate) fn find(
         &self,
         abspath: &std::path::Path,
-    ) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
+    ) -> Result<Vec<TrashEntry>, rusqlite::Error> {
         let query = r#"
 SELECT
     id,
-    abspath,
+    original_path,
+    trash_path,
     file_size,
     blake3sum,
     mtime,
@@ -149,16 +173,16 @@ SELECT
 FROM
     trash_entry
 WHERE
-    abspath = :abspath
+    original_path = :original_path
 ORDER BY
     created_at DESC
         "#;
         let mut stmt = self.connection.prepare(query)?;
         let rows = stmt.query_map(&[(":abspath", &abspath.to_string_lossy())], |row| {
-            Ok((
-                row.get("id")?,
-                FileMetadata {
-                    abspath: row.get("abspath")?,
+            Ok(TrashEntry {
+                id: row.get("id")?,
+                metadata: FileMetadata {
+                    original_path: row.get("original_path")?,
                     file_size: row.get("file_size")?,
                     blake3sum: row.get("blake3sum")?,
                     mtime: row.get("mtime")?,
@@ -167,7 +191,8 @@ ORDER BY
                     uid: row.get("uid")?,
                     gid: row.get("gid")?,
                 },
-            ))
+                trash_path: row.get::<_, String>("trash_path")?.into(),
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -176,10 +201,12 @@ ORDER BY
         Ok(results)
     }
 
-    pub(crate) fn find_by_id(&self, id: i64) -> Result<Option<FileMetadata>, rusqlite::Error> {
+    pub(crate) fn find_by_id(&self, id: i64) -> Result<Option<TrashEntry>, rusqlite::Error> {
         let query = r#"
 SELECT
-    abspath,
+    id,
+    original_path,
+    trash_path,
     file_size,
     blake3sum,
     mtime,
@@ -194,15 +221,19 @@ WHERE
 "#;
         let mut stmt = self.connection.prepare(query)?;
         let mut r = stmt.query_map(&[(":id", &id)], |row| {
-            Ok(FileMetadata {
-                abspath: row.get("abspath")?,
-                file_size: row.get("file_size")?,
-                blake3sum: row.get("blake3sum")?,
-                mtime: row.get("mtime")?,
-                atime: row.get("atime")?,
-                unix_mode: row.get("unix_mode")?,
-                uid: row.get("uid")?,
-                gid: row.get("gid")?,
+            Ok(TrashEntry {
+                id: row.get("id")?,
+                metadata: FileMetadata {
+                    original_path: row.get("original_path")?,
+                    file_size: row.get("file_size")?,
+                    blake3sum: row.get("blake3sum")?,
+                    mtime: row.get("mtime")?,
+                    atime: row.get("atime")?,
+                    unix_mode: row.get("unix_mode")?,
+                    uid: row.get("uid")?,
+                    gid: row.get("gid")?,
+                },
+                trash_path: row.get::<_, String>("trash_path")?.into(),
             })
         })?;
         match r.next() {
@@ -212,14 +243,12 @@ WHERE
         }
     }
 
-    pub(crate) fn find_expired(
-        &self,
-        now: u64,
-    ) -> Result<Vec<(i64, FileMetadata)>, rusqlite::Error> {
+    pub(crate) fn find_expired(&self, now: u64) -> Result<Vec<TrashEntry>, rusqlite::Error> {
         let query = r#"
 SELECT
     id,
-    abspath,
+    original_path,
+    trash_path,
     file_size,
     blake3sum,
     mtime,
@@ -236,10 +265,10 @@ ORDER BY
         "#;
         let mut stmt = self.connection.prepare(query)?;
         let rows = stmt.query_map(&[(":now", &now)], |row| {
-            Ok((
-                row.get("id")?,
-                FileMetadata {
-                    abspath: row.get("abspath")?,
+            Ok(TrashEntry {
+                id: row.get("id")?,
+                metadata: FileMetadata {
+                    original_path: row.get("original_path")?,
                     file_size: row.get("file_size")?,
                     blake3sum: row.get("blake3sum")?,
                     mtime: row.get("mtime")?,
@@ -248,7 +277,8 @@ ORDER BY
                     uid: row.get("uid")?,
                     gid: row.get("gid")?,
                 },
-            ))
+                trash_path: row.get::<_, String>("trash_path")?.into(),
+            })
         })?;
         let mut results = Vec::new();
         for row in rows {
@@ -319,7 +349,7 @@ mod test {
     fn test_create() {
         let suite = setup();
         let meta = FileMetadata {
-            abspath: "/tmp/testfile".to_string(),
+            original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
             blake3sum: "1234567890abcdef".to_string(),
             mtime: 123456,
@@ -328,15 +358,24 @@ mod test {
             uid: 1000,
             gid: 1000,
         };
-        let id = suite.create(&meta).unwrap();
-        assert_eq!(id, 1);
+        let generated_path = PathBuf::from("/tmp/Some/Generated/Path");
+        let entry = suite.create(meta.clone(), &generated_path).unwrap();
+        assert_eq!(entry.id, 1);
+        assert_eq!(meta.original_path, entry.metadata.original_path);
+        assert_eq!(meta.file_size, entry.metadata.file_size);
+        assert_eq!(meta.blake3sum, entry.metadata.blake3sum);
+        assert_eq!(meta.mtime, entry.metadata.mtime);
+        assert_eq!(meta.atime, entry.metadata.atime);
+        assert_eq!(meta.unix_mode, entry.metadata.unix_mode);
+        assert_eq!(meta.uid, entry.metadata.uid);
+        assert_eq!(meta.gid, entry.metadata.gid);
     }
 
     #[test]
     fn test_delete() {
         let suite = setup();
         let meta = FileMetadata {
-            abspath: "/tmp/testfile".to_string(),
+            original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
             blake3sum: "1234567890abcdef".to_string(),
             mtime: 123456,
@@ -345,9 +384,10 @@ mod test {
             uid: 1000,
             gid: 1000,
         };
-        let id = suite.create(&meta).unwrap();
-        suite.delete(id).unwrap();
-        let result = suite.find_by_id(id).unwrap();
+        let generated_path = PathBuf::from("/tmp/Some/Generated/Path");
+        let entry = suite.create(meta.clone(), &generated_path).unwrap();
+        suite.delete(entry.id).unwrap();
+        let result = suite.find_by_id(entry.id).unwrap();
         assert!(result.is_none());
     }
 
@@ -355,7 +395,7 @@ mod test {
     fn test_insert_and_find() {
         let suite = setup();
         let meta = FileMetadata {
-            abspath: "/tmp/testfile".to_string(),
+            original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
             blake3sum: "cafebabe".to_string(),
             mtime: 1709096470,
@@ -364,16 +404,17 @@ mod test {
             uid: 1000,
             gid: 1000,
         };
-        let id = suite.create(&meta).unwrap();
-        let meta_found = suite.find_by_id(id).unwrap().unwrap();
-        assert_eq!(meta.file_size, meta_found.file_size);
-        assert_eq!(meta.blake3sum, meta_found.blake3sum);
-        assert_eq!(meta.mtime, meta_found.mtime);
-        assert_eq!(meta.atime, meta_found.atime);
-        assert_eq!(meta.unix_mode, meta_found.unix_mode);
-        assert_eq!(meta.uid, meta_found.uid);
-        assert_eq!(meta.gid, meta_found.gid);
-        assert_eq!(meta.abspath, meta_found.abspath);
+        let generated_path = PathBuf::from("/tmp/a.txt");
+        let entry = suite.create(meta.clone(), &generated_path).unwrap();
+        let meta_found = suite.find_by_id(entry.id).unwrap().unwrap();
+        assert_eq!(meta.file_size, meta_found.metadata.file_size);
+        assert_eq!(meta.blake3sum, meta_found.metadata.blake3sum);
+        assert_eq!(meta.mtime, meta_found.metadata.mtime);
+        assert_eq!(meta.atime, meta_found.metadata.atime);
+        assert_eq!(meta.unix_mode, meta_found.metadata.unix_mode);
+        assert_eq!(meta.uid, meta_found.metadata.uid);
+        assert_eq!(meta.gid, meta_found.metadata.gid);
+        assert_eq!(meta.original_path, meta_found.metadata.original_path);
     }
 
     #[test]

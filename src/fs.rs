@@ -1,9 +1,9 @@
 use blake3::Hasher;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileMetadata {
-    pub abspath: String,
+    pub original_path: String,
     pub file_size: u64,
     pub blake3sum: String,
     pub mtime: u64,
@@ -33,7 +33,7 @@ pub fn read_file_meta(path: &std::path::Path) -> Result<FileMetadata, std::io::E
         .as_secs();
     let blake3sum = blake3sum(path)?;
     Ok(FileMetadata {
-        abspath: path.to_string_lossy().to_string(),
+        original_path: path.to_string_lossy().to_string(),
         file_size: metadata.len(),
         blake3sum,
         mtime,
