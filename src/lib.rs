@@ -1,13 +1,17 @@
 pub mod config;
 mod fs;
 pub mod metadata_db;
+mod util;
 use metadata_db::{MetadataDB, TrashEntry};
 use regex::Regex;
 use std::{
+    io::BufWriter,
     os::unix::fs::{chown, PermissionsExt},
     path::PathBuf,
     rc::Rc,
 };
+use tar::Builder;
+use util::toposort_files;
 
 pub struct App {
     pub config: Rc<config::Config>,
@@ -23,12 +27,17 @@ impl App {
         })
     }
 
-    pub fn recycle_subtree(&self, _path: &std::path::Path) -> Result<(), std::io::Error> {
-        todo!()
-    }
-
-    pub fn recycle_dir(&self, _path: &std::path::Path) -> Result<(), std::io::Error> {
-        todo!()
+    pub fn recycle_dir(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        assert!(path.is_dir());
+        assert!(!path.is_symlink());
+        let meta = fs::read_file_meta(path)?;
+        // pack into tarball
+        let dest_archive = self.generate_trash_path(&meta);
+        let dest_archive_file = std::fs::File::create(&dest_archive)?;
+        let mut archive = Builder::new(BufWriter::new(dest_archive_file));
+        archive.append_dir_all(path.file_name().unwrap(), path)?;
+        archive.finish()?;
+        Ok(())
     }
 
     pub fn recycle_file(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
@@ -153,7 +162,7 @@ impl App {
             }
         };
         let realpaths: Vec<PathBuf> = expired.into_iter().map(|entry| entry.trash_path).collect();
-        let realpaths = metadata_db::toposort_files(&realpaths);
+        let realpaths = toposort_files(&realpaths);
         for realpath in realpaths.iter() {
             if realpath.is_dir() {
                 std::fs::remove_dir(realpath)?;

@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::config::Config;
 use crate::fs::FileMetadata;
@@ -36,6 +36,8 @@ SELECT
     id,
     original_path,
     trash_path,
+    is_dir,
+    link_target,
     file_size,
     blake3sum,
     mtime,
@@ -55,6 +57,8 @@ LIMIT :n
             let metadata = FileMetadata {
                 original_path: row.get("original_path")?,
                 file_size: row.get("file_size")?,
+                is_dir: row.get("is_dir")?,
+                link_target: row.get("link_target")?,
                 blake3sum: row.get("blake3sum")?,
                 mtime: row.get("mtime")?,
                 atime: row.get("atime")?,
@@ -86,6 +90,8 @@ INSERT INTO
     trash_entry (
         original_path,
         trash_path,
+        is_dir,
+        link_target,
         file_size,
         blake3sum,
         mtime,
@@ -99,6 +105,8 @@ VALUES
     (
         :original_path,
         :trash_path,
+        :is_dir,
+        :link_target,
         :file_size,
         :blake3sum,
         :mtime,
@@ -116,17 +124,19 @@ VALUES
             + self.config.ttl;
         let rows_changed = self.connection.execute(
             query,
-            &[
-                (":original_path", &meta.original_path),
-                (":trash_path", &generated_path.to_string_lossy().to_string()),
-                (":file_size", &meta.file_size.to_string()),
-                (":blake3sum", &meta.blake3sum),
-                (":mtime", &meta.mtime.to_string()),
-                (":atime", &meta.atime.to_string()),
-                (":unix_mode", &meta.unix_mode.to_string()),
-                (":uid", &meta.uid.to_string()),
-                (":gid", &meta.gid.to_string()),
-                (":expiration", &expiration.to_string()),
+            params![
+                &meta.original_path,
+                &generated_path.to_string_lossy().to_string(),
+                meta.is_dir,
+                meta.link_target,
+                &meta.file_size.to_string(),
+                &meta.blake3sum,
+                &meta.mtime.to_string(),
+                &meta.atime.to_string(),
+                &meta.unix_mode.to_string(),
+                &meta.uid.to_string(),
+                &meta.gid.to_string(),
+                &expiration.to_string(),
             ],
         )?;
         if rows_changed == 0 {
@@ -162,6 +172,8 @@ WHERE
 SELECT
     id,
     original_path,
+    is_dir,
+    link_target,
     trash_path,
     file_size,
     blake3sum,
@@ -184,6 +196,8 @@ ORDER BY
                 metadata: FileMetadata {
                     original_path: row.get("original_path")?,
                     file_size: row.get("file_size")?,
+                    is_dir: row.get("is_dir")?,
+                    link_target: row.get("link_target")?,
                     blake3sum: row.get("blake3sum")?,
                     mtime: row.get("mtime")?,
                     atime: row.get("atime")?,
@@ -207,6 +221,8 @@ SELECT
     id,
     original_path,
     trash_path,
+    is_dir,
+    link_target,
     file_size,
     blake3sum,
     mtime,
@@ -226,6 +242,8 @@ WHERE
                 metadata: FileMetadata {
                     original_path: row.get("original_path")?,
                     file_size: row.get("file_size")?,
+                    is_dir: row.get("is_dir")?,
+                    link_target: row.get("link_target")?,
                     blake3sum: row.get("blake3sum")?,
                     mtime: row.get("mtime")?,
                     atime: row.get("atime")?,
@@ -249,6 +267,8 @@ SELECT
     id,
     original_path,
     trash_path,
+    is_dir,
+    link_target,
     file_size,
     blake3sum,
     mtime,
@@ -270,6 +290,8 @@ ORDER BY
                 metadata: FileMetadata {
                     original_path: row.get("original_path")?,
                     file_size: row.get("file_size")?,
+                    is_dir: row.get("is_dir")?,
+                    link_target: row.get("link_target")?,
                     blake3sum: row.get("blake3sum")?,
                     mtime: row.get("mtime")?,
                     atime: row.get("atime")?,
@@ -286,50 +308,6 @@ ORDER BY
         }
         Ok(results)
     }
-}
-
-pub fn toposort_files(files: &Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut graph: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-    for file in files {
-        let path = file.clone();
-        for ancestor in path.ancestors().skip(1) {
-            if ancestor.has_root() && ancestor.components().count() == 1 {
-                continue;
-            }
-            let child_name = path.clone();
-            graph
-                .entry(ancestor.to_path_buf())
-                .or_default()
-                .push(child_name);
-        }
-    }
-    topological_sort(&graph)
-}
-
-fn topological_sort(graph: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<PathBuf> {
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut sorted_paths: Vec<PathBuf> = Vec::new();
-
-    fn dfs(
-        node: &PathBuf,
-        graph: &HashMap<PathBuf, Vec<PathBuf>>,
-        visited: &mut HashSet<PathBuf>,
-        sorted_paths: &mut Vec<PathBuf>,
-    ) {
-        if visited.contains(node) {
-            return;
-        }
-        visited.insert(node.to_path_buf());
-        for child in graph.get(node).unwrap_or(&Vec::new()) {
-            dfs(child, graph, visited, sorted_paths);
-        }
-        sorted_paths.push(node.to_path_buf());
-    }
-
-    for node in graph.keys() {
-        dfs(node, graph, &mut visited, &mut sorted_paths);
-    }
-    sorted_paths
 }
 
 #[cfg(test)]
@@ -351,6 +329,8 @@ mod test {
         let meta = FileMetadata {
             original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
+            is_dir: false,
+            link_target: None,
             blake3sum: "1234567890abcdef".to_string(),
             mtime: 123456,
             atime: 123456,
@@ -377,6 +357,8 @@ mod test {
         let meta = FileMetadata {
             original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
+            is_dir: false,
+            link_target: None,
             blake3sum: "1234567890abcdef".to_string(),
             mtime: 123456,
             atime: 123456,
@@ -397,6 +379,8 @@ mod test {
         let meta = FileMetadata {
             original_path: "/tmp/testfile".to_string(),
             file_size: 1234,
+            is_dir: false,
+            link_target: None,
             blake3sum: "cafebabe".to_string(),
             mtime: 1709096470,
             atime: 1709096477,
@@ -415,27 +399,5 @@ mod test {
         assert_eq!(meta.uid, meta_found.metadata.uid);
         assert_eq!(meta.gid, meta_found.metadata.gid);
         assert_eq!(meta.original_path, meta_found.metadata.original_path);
-    }
-
-    #[test]
-    fn test_toposort_files() {
-        let mut files = vec![
-            PathBuf::from("/tmp"),
-            PathBuf::from("/tmp/foo/bar/baz/quux"),
-            PathBuf::from("/tmp/foo"),
-            PathBuf::from("/tmp/foo/bar/baz/qux"),
-            PathBuf::from("/tmp/foo/bar/baz"),
-            PathBuf::from("/tmp/foo/bar"),
-        ];
-        let sorted = toposort_files(&files);
-        let expected = vec![
-            PathBuf::from("/tmp/foo/bar/baz/quux"),
-            PathBuf::from("/tmp/foo/bar/baz/qux"),
-            PathBuf::from("/tmp/foo/bar/baz"),
-            PathBuf::from("/tmp/foo/bar"),
-            PathBuf::from("/tmp/foo"),
-            PathBuf::from("/tmp"),
-        ];
-        assert_eq!(sorted, expected);
     }
 }

@@ -40,9 +40,7 @@ fn main() {
         let cwd = std::env::current_dir().expect("Can't tell what directory this is in");
         filename = cwd.join(&filename);
     }
-    if opts.recursive {
-        app.recycle_subtree(&filename).unwrap();
-    } else if filename.is_dir() {
+    if filename.is_dir() {
         app.recycle_dir(&filename).unwrap();
     } else {
         app.recycle_file(&filename).unwrap();
